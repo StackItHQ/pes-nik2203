@@ -1,3 +1,4 @@
+from crypt import methods
 from flask import Flask, request, jsonify
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -7,6 +8,8 @@ import mysql.connector
 import os
 import re
 
+
+# Removes need for redundant authentication by checking if already authenticated and valid
 def authenticate_google_sheets():
     creds = None
     if os.path.exists('token.json'):
@@ -24,23 +27,22 @@ def authenticate_google_sheets():
     service = build('sheets', 'v4', credentials=creds)
     return service
 
-# Google Sheets API setup
+# Google Sheets API
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
 service = authenticate_google_sheets()
 
-# Flask app setup
 app = Flask(__name__)
 
 # MySQL connection setup
 mydb = mysql.connector.connect(
     host="localhost",
     user="root",
-    password="#Nikki2203",  # Replace with your password
+    password="#Nikki2203",
     database="superjoin"
 )
 
-# Helper to map column indexes to column names in MySQL
+# Map column indexes to column names in MySQL
 column_mapping = {
     1: 'PersonID',
     2: 'LastName',
@@ -49,18 +51,22 @@ column_mapping = {
     5: 'City'
 }
 
+# A tiny function to handle the root route since the 404 can be annoying
+@app.route('/', methods=['GET'])
+def handle_home():
+    print('Flask App Home can be accessed')
+    return jsonify({"status": "success"}), 200
+
 # Function to handle the incoming webhook from Google Sheets
 @app.route('/webhook', methods=['POST'])
 def sync_google_to_mysql():
     data = request.json
-
-    # Extract necessary information
-    sheet_name = data.get('sheetName', '')
+    # sheet_name = data.get('sheetName', '')
     cell_range = data.get('range', '')
-    new_values = data.get('values', [['']])[0]  # Extract new value(s)
+    new_values = data.get('values', [['']])[0]  # Extract changed value(s)
     new_value = new_values[0] if new_values else None  # Get first value from array if present
 
-    # Extract row and column from range (example range: "D2")
+    # Extract row and column from range
     match = re.match(r"([A-Z]+)(\d+)", cell_range)
     if not match:
         return jsonify({"status": "error", "message": "Invalid range"}), 400
@@ -69,17 +75,14 @@ def sync_google_to_mysql():
     row_number = str(int(row_number) - 1)
     column_number = ord(column_letter) - ord('A') + 1  # Convert letter to column number
 
-    # Validate the range falls within the expected column set
+    # Validate the range falls within the expected column set as currently hardcoded
     if column_number not in column_mapping:
         return jsonify({"status": "error", "message": "Out of range"}), 400
 
     # Map the column number to the corresponding MySQL column name
     column_name = column_mapping[column_number]
 
-    # Update MySQL row based on the row number (person ID or specific row identifier)
     cursor = mydb.cursor()
-
-    # Assuming row_number corresponds to PersonID
     cursor.execute(f"SELECT * FROM persons WHERE PersonID = %s", (row_number,))
     record = cursor.fetchall()
 
@@ -92,7 +95,7 @@ def sync_google_to_mysql():
         """, (new_value, row_number,))
     else:
         # Insert a new record if it doesn't exist
-        values = [row_number, '0', '0', '0', '0']  # Default values
+        values = [row_number, '0', '0', '0', '0']  # Default values as None results in an error
 
         # Update the corresponding field with the new value
         values[column_number - 1] = new_value
@@ -112,8 +115,8 @@ def sync_google_to_mysql():
 def sync_mysql_to_google():
     data = request.json
 
-    sheet_id = '1mTjh5EtYlD-6aZQ4-P4vNl8bv2QZJQWcC-5_Btp8k1Y'  # Replace with actual Google Sheet ID
-    range_name = 'Sheet1!A1:E'  # Adjust range if necessary
+    sheet_id = '1mTjh5EtYlD-6aZQ4-P4vNl8bv2QZJQWcC-5_Btp8k1Y'
+    range_name = 'Sheet1!A1:E'
 
     body = {
         'values': [[data['PersonID'], data['LastName'], data['FirstName'], data['Address'], data['City']]]

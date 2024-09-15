@@ -5,13 +5,8 @@ from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
 import mysql.connector
 import os
+import re
 
-app = Flask(__name__)
-
-# Google Sheets API scopes
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-
-# Authenticate with Google Sheets API
 def authenticate_google_sheets():
     creds = None
     if os.path.exists('token.json'):
@@ -29,108 +24,107 @@ def authenticate_google_sheets():
     service = build('sheets', 'v4', credentials=creds)
     return service
 
-# MySQL Connection
-def get_mysql_connection():
-    connection = mysql.connector.connect(
-        host="localhost",  # Replace with your DB host
-        user="root",
-        password="#Nikki2203",
-        database="superjoin"
-    )
-    return connection
+# Google Sheets API setup
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+service = authenticate_google_sheets()
 
-# Create MySQL Table from Google Sheet Data
-def create_mysql_table_from_sheet(sheet_name, data):
-    connection = get_mysql_connection()
-    cursor = connection.cursor()
+# Flask app setup
+app = Flask(__name__)
 
-    # Extract headers
-    headers = data[0]
-    for i in range(len(headers)):
-        headers[i] = ''.join(headers[i].split(' '))
-    print(headers)
-    for i in headers:
-        print(i)
-    # Create table query
-    create_query = f"CREATE TABLE IF NOT EXISTS {sheet_name} ("
-    create_query += ", ".join([f"{header} VARCHAR(255)" for header in headers])
-    create_query += ");"
-    print(create_query)
+# MySQL connection setup
+mydb = mysql.connector.connect(
+    host="localhost",
+    user="root",
+    password="#Nikki2203",  # Replace with your password
+    database="superjoin"
+)
 
-    cursor.execute(create_query)
-    connection.commit()
-    cursor.execute(f"DESC {sheet_name};")
-    desc = cursor.fetchall()
-    print(desc)    
-    # Insert Data into the new table
-    for row in data[1:]:
-        insert_query = f"INSERT INTO {sheet_name} ({', '.join(headers)}) VALUES ({', '.join(['%s'] * len(row))})"
-        cursor.execute(insert_query, row)
-    
-    connection.commit()
-    cursor.close()
-    connection.close()
+# Helper to map column indexes to column names in MySQL
+column_mapping = {
+    1: 'PersonID',
+    2: 'LastName',
+    3: 'FirstName',
+    4: 'Address',
+    5: 'City'
+}
 
-# Create Google Sheet from MySQL Table
-def create_google_sheet_from_mysql(table_name):
-    service = authenticate_google_sheets()
-    connection = get_mysql_connection()
-    cursor = connection.cursor()
-
-    # Fetch table data from MySQL
-    cursor.execute(f"SELECT * FROM {table_name}")
-    rows = cursor.fetchall()
-
-    # Fetch table columns (headers)
-    cursor.execute(f"SHOW COLUMNS FROM {table_name}")
-    columns = [column[0] for column in cursor.fetchall()]
-
-    # Create a new Google Sheet
-    sheet_body = {
-        'properties': {
-            'title': table_name
-        }
-    }
-    sheet = service.spreadsheets().create(body=sheet_body).execute()
-    sheet_id = sheet['spreadsheetId']
-
-    # Insert Data into Google Sheet
-    values = [columns] + rows
-    body = {
-        'values': values
-    }
-    service.spreadsheets().values().update(
-        spreadsheetId=sheet_id, range="A1",
-        valueInputOption="RAW", body=body).execute()
-
-    cursor.close()
-    connection.close()
-
-    return sheet_id
-
-@app.route('/', methods=['GET'])
-def handle_home():
-    return jsonify({"status": "success"}) , 200
-
-# Webhook to handle Google Sheets changes
+# Function to handle the incoming webhook from Google Sheets
 @app.route('/webhook', methods=['POST'])
-def handle_sheet_webhook():
+def sync_google_to_mysql():
     data = request.json
-    sheet_name = data.get('sheetName')
-    range_ = data.get('range')
-    values = data.get('values')
 
-    # Create MySQL table from Google Sheet if it doesn't exist
-    create_mysql_table_from_sheet(sheet_name, values)
-    
+    # Extract necessary information
+    sheet_name = data.get('sheetName', '')
+    cell_range = data.get('range', '')
+    new_values = data.get('values', [['']])[0]  # Extract new value(s)
+    new_value = new_values[0] if new_values else None  # Get first value from array if present
+
+    # Extract row and column from range (example range: "D2")
+    match = re.match(r"([A-Z]+)(\d+)", cell_range)
+    if not match:
+        return jsonify({"status": "error", "message": "Invalid range"}), 400
+
+    column_letter, row_number = match.groups()
+    row_number = str(int(row_number) - 1)
+    column_number = ord(column_letter) - ord('A') + 1  # Convert letter to column number
+
+    # Validate the range falls within the expected column set
+    if column_number not in column_mapping:
+        return jsonify({"status": "error", "message": "Out of range"}), 400
+
+    # Map the column number to the corresponding MySQL column name
+    column_name = column_mapping[column_number]
+
+    # Update MySQL row based on the row number (person ID or specific row identifier)
+    cursor = mydb.cursor()
+
+    # Assuming row_number corresponds to PersonID
+    cursor.execute(f"SELECT * FROM persons WHERE PersonID = %s", (row_number,))
+    record = cursor.fetchall()
+
+    if record:
+        # Update the existing record
+        cursor.execute(f"""
+            UPDATE persons
+            SET {column_name} = %s
+            WHERE PersonID = %s
+        """, (new_value, row_number,))
+    else:
+        # Insert a new record if it doesn't exist
+        values = [row_number, '0', '0', '0', '0']  # Default values
+
+        # Update the corresponding field with the new value
+        values[column_number - 1] = new_value
+
+        cursor.execute(f"""
+            INSERT INTO persons (PersonID, LastName, FirstName, Address, City)
+            VALUES (%s, %s, %s, %s, %s)
+        """, tuple(values))
+
+    mydb.commit()
+
     return jsonify({"status": "success"}), 200
 
-# Sync MySQL to Google Sheets
-@app.route('/sync_mysql_to_sheets', methods=['POST'])
-def sync_mysql_to_sheets():
-    table_name = request.json.get('table_name')
-    sheet_id = create_google_sheet_from_mysql(table_name)
-    return jsonify({"status": "Google Sheet created", "sheet_id": sheet_id}), 200
+
+# Flask route to manually sync MySQL to Google Sheets (if needed)
+@app.route('/sync-mysql-to-google', methods=['POST'])
+def sync_mysql_to_google():
+    data = request.json
+
+    sheet_id = '1mTjh5EtYlD-6aZQ4-P4vNl8bv2QZJQWcC-5_Btp8k1Y'  # Replace with actual Google Sheet ID
+    range_name = 'Sheet1!A1:E'  # Adjust range if necessary
+
+    body = {
+        'values': [[data['PersonID'], data['LastName'], data['FirstName'], data['Address'], data['City']]]
+    }
+
+    service.spreadsheets().values().update(
+        spreadsheetId=sheet_id, range=range_name,
+        valueInputOption="RAW", body=body).execute()
+
+    return jsonify({"status": "success"}), 200
+
 
 if __name__ == '__main__':
     app.run(port=5000)

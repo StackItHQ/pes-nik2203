@@ -59,4 +59,17 @@ We're available at techhiring@superjoin.ai for all queries.
 All the best ✨.
 
 ## Developer's Section
+
+### My Approach
+
+- I started off by analysing the problem statement and coming up with a high level view in order to understand what I should be doing and how I should be approaching this problem
+
+![High Level View/Flowchart of the approach](./flowchart.png)
+
+
+#### Resources Used
+
+- [Syncing Google Sheets to a database via REST API’s](https://www.youtube.com/watch?v=ftxroBc7mi4)
+- 
+
 *Add your video here, and your approach to the problem (optional). Leave some comments for us here if you want, we will be reading this :)*

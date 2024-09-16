@@ -119,7 +119,9 @@ All the best ✨.
   - To identify column headers, I plan to use regex to check if the cell number of the value most recently changed has a 1 in it - this tells us that it is a column header
   - Likewise any edits/insertions in the sheet will merit the same in the database.
   - Using regex and ord(), we figure out which column had a value changed, then we run a DESC \<Table Name>; to understand the structure of the table and use it to craft our query such that the correct record is updated.
-  
+
+My video is attached [here](./bidirectional_sync_sheets_mysql_explanation.mp4)
+
 #### Additional Thoughts
 
 Some edge cases that I thought of include:

@@ -103,6 +103,7 @@ Some edge cases that I thought of include:
 - Applying filters and such in the Google Sheet
 - Charts and other graphics that would modify cell contents and thereby trigger the webhook
 - Tables and Pivot Tables in the Google Sheet would possibly need to be represented in the database
+- While primary keys having unique values can be and is enforced in the database, the same is not mandated in Google Sheets. In other words, what is the primary key in the database can have duplicate entries in the Google Sheet. The question arises here, which record do you consider as the valid one?
 
 #### Resources Used
 

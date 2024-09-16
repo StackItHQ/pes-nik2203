@@ -1,4 +1,4 @@
-from crypt import methods
+from hmac import new
 from flask import Flask, request, jsonify
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -62,6 +62,7 @@ def handle_home():
 def sync_google_to_mysql():
     data = request.json
     # sheet_name = data.get('sheetName', '')
+    print(data)
     cell_range = data.get('range', '')
     new_values = data.get('values', [['']])[0]  # Extract changed value(s)
     new_value = new_values[0] if new_values else None  # Get first value from array if present
@@ -87,15 +88,33 @@ def sync_google_to_mysql():
     record = cursor.fetchall()
 
     if record:
-        # Update the existing record
-        cursor.execute(f"""
-            UPDATE persons
-            SET {column_name} = %s
-            WHERE PersonID = %s
-        """, (new_value, row_number,))
+        # If the primary key, aka, PersonID is removed, it is tantamount to the record being removed and hence we delete it
+        if column_number == 1 and new_value == '':
+            cursor.execute(f"""
+                DELETE FROM persons WHERE PersonID = %s
+        """, (row_number, ))
+        else:
+            cursor.execute(f"""
+                UPDATE persons
+                SET {column_name} = %s
+                WHERE PersonID = %s
+            """, (new_value, row_number,))
+            # Now we check if any record has all its values apart from primary key empty, essentially a null record. We will consider deleting all information about a record is equivalent to deleting the record itself
+            cursor.execute(f"""
+                SELECT * FROM persons WHERE PersonID = %s
+            """, (row_number,))
+            res = cursor.fetchall()
+            flag = False
+            for i in res:
+                if i[1] == '' and i[2] == '' and i[3] == '' and i[4] == '':
+                    flag = True
+            if flag:
+                cursor.execute(f"""
+                    DELETE FROM persons WHERE PersonID = %s
+            """, (row_number, ))
     else:
         # Insert a new record if it doesn't exist
-        values = [row_number, '0', '0', '0', '0']  # Default values as None results in an error
+        values = [row_number, '', '', '', '']  # Default values as None results in an error
 
         # Update the corresponding field with the new value
         values[column_number - 1] = new_value

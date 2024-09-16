@@ -1,46 +1,10 @@
-from hmac import new
 from flask import Flask, request, jsonify
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from google.auth.transport.requests import Request
-import mysql.connector
-import os
+from config import service, mydb
 import re
-
-
-# Removes need for redundant authentication by checking if already authenticated and valid
-def authenticate_google_sheets():
-    creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-    
-    service = build('sheets', 'v4', credentials=creds)
-    return service
-
-# Google Sheets API
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-service = authenticate_google_sheets()
+import threading
+import time
 
 app = Flask(__name__)
-
-# MySQL connection setup
-mydb = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="#Nikki2203",
-    database="superjoin"
-)
 
 # Map column indexes to column names in MySQL
 column_mapping = {
@@ -50,6 +14,9 @@ column_mapping = {
     4: 'Address',
     5: 'City'
 }
+
+# Polling interval in seconds
+POLLING_INTERVAL = 5  # Adjust as needed
 
 # A tiny function to handle the root route since the 404 can be annoying
 @app.route('/', methods=['GET'])
@@ -61,8 +28,6 @@ def handle_home():
 @app.route('/webhook', methods=['POST'])
 def sync_google_to_mysql():
     data = request.json
-    # sheet_name = data.get('sheetName', '')
-    print(data)
     cell_range = data.get('range', '')
     new_values = data.get('values', [['']])[0]  # Extract changed value(s)
     new_value = new_values[0] if new_values else None  # Get first value from array if present
@@ -99,7 +64,7 @@ def sync_google_to_mysql():
                 SET {column_name} = %s
                 WHERE PersonID = %s
             """, (new_value, row_number,))
-            # Now we check if any record has all its values apart from primary key empty, essentially a null record. We will consider deleting all information about a record is equivalent to deleting the record itself
+            # Now we check if any record has all its values apart from primary key empty, essentially a null record. We will consider deleting all information about a record is equivalent to deleting the record
             cursor.execute(f"""
                 SELECT * FROM persons WHERE PersonID = %s
             """, (row_number,))
@@ -147,6 +112,81 @@ def sync_mysql_to_google():
 
     return jsonify({"status": "success"}), 200
 
+def poll_mysql_for_changes():
+    while True:
+        cursor = mydb.cursor(dictionary=True)
+        
+        # Select the most recent entry for each PersonID
+        cursor.execute("""
+            SELECT u1.*
+            FROM updates u1
+            INNER JOIN (
+                SELECT PersonID, MAX(timestamp) AS max_timestamp
+                FROM updates
+                GROUP BY PersonID
+            ) u2
+            ON u1.PersonID = u2.PersonID AND u1.timestamp = u2.max_timestamp
+        """)
+        changes = cursor.fetchall()
+
+        if changes:
+            for change in changes:
+                print(change)
+                action = change['operation']
+                record = {
+                    'PersonID': change['PersonID'],
+                    'LastName': change['LastName'],
+                    'FirstName': change['FirstName'],
+                    'Address': change['Address'],
+                    'City': change['City']
+                }
+
+                if action == 'INSERT':
+                    # Insert the new record into the Google Sheet
+                    body = {
+                        'values': [[record['PersonID'], record['LastName'], record['FirstName'], record['Address'], record['City']]]
+                    }
+                    service.spreadsheets().values().append(
+                        spreadsheetId='1mTjh5EtYlD-6aZQ4-P4vNl8bv2QZJQWcC-5_Btp8k1Y', 
+                        range="persons!A1:E", 
+                        valueInputOption="RAW", 
+                        body=body
+                    ).execute()
+
+                elif action == 'UPDATE':
+                    # Rewrite the entire row in the Google Sheet
+                    row_number = record['PersonID']  # Assuming PersonID maps to the row number
+                    body = {
+                        'values': [[record['PersonID'], record['LastName'], record['FirstName'], record['Address'], record['City']]]
+                    }
+                    range_ = f'persons!A{int(row_number) + 1}:E{int(row_number) + 1}'  # Update the entire row
+
+                    service.spreadsheets().values().update(
+                        spreadsheetId='1mTjh5EtYlD-6aZQ4-P4vNl8bv2QZJQWcC-5_Btp8k1Y', 
+                        range=range_, 
+                        valueInputOption="RAW", 
+                        body=body
+                    ).execute()
+
+                elif action == 'DELETE':
+                    # Delete the row from Google Sheet (clear the values)
+                    row_number = record['PersonID']
+                    service.spreadsheets().values().clear(
+                        spreadsheetId='1mTjh5EtYlD-6aZQ4-P4vNl8bv2QZJQWcC-5_Btp8k1Y', 
+                        range=f'persons!A{int(row_number) + 1}:E{int(row_number) + 1}'
+                    ).execute()
+
+            # Clear the update table after processing
+            cursor.execute("DELETE FROM updates")
+            mydb.commit()
+
+        cursor.close()
+        time.sleep(POLLING_INTERVAL)  # Wait before polling again
+
+# Start the polling thread
+polling_thread = threading.Thread(target=poll_mysql_for_changes)
+polling_thread.daemon = True
+polling_thread.start()
 
 if __name__ == '__main__':
     app.run(port=5000)
